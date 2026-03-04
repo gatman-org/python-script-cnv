@@ -118,7 +118,25 @@ def _capture_page_image(page, output_path: Path, wait_seconds: float) -> bool:
     """
 
     box = page.evaluate(script)
-    if box and box.get("width", 0) > 0 and box.get("height", 0) > 0:
+    viewport = page.viewport_size or {"width": 0, "height": 0}
+
+    def _crop_looks_like_full_design(candidate: dict) -> bool:
+        width = float(candidate.get("width", 0))
+        height = float(candidate.get("height", 0))
+        if width <= 0 or height <= 0:
+            return False
+
+        vp_width = float(viewport.get("width", 0))
+        vp_height = float(viewport.get("height", 0))
+        if vp_width <= 0 or vp_height <= 0:
+            return True
+
+        # Canva pages in viewer mode generally occupy most of the viewport.
+        # If the detected crop is too small, it's often a nested image tile,
+        # which produces broken/partial captures.
+        return width >= vp_width * 0.65 and height >= vp_height * 0.65
+
+    if box and _crop_looks_like_full_design(box):
         page.screenshot(
             path=str(output_path),
             clip={
@@ -130,7 +148,9 @@ def _capture_page_image(page, output_path: Path, wait_seconds: float) -> bool:
         )
         return True
 
-    page.screenshot(path=str(output_path), full_page=True)
+    # Fallback to viewport screenshot when crop detection likely matched
+    # a nested element instead of the full design page.
+    page.screenshot(path=str(output_path))
     return False
 
 
