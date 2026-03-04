@@ -96,38 +96,50 @@ def _capture_page_image(page, output_path: Path, wait_seconds: float) -> bool:
     # Let fonts/graphics settle for a cleaner capture.
     time.sleep(wait_seconds)
 
-    # Prefer largest visible canvas/image (usually the design page itself).
-    script = """
-    () => {
-      const nodes = Array.from(document.querySelectorAll('canvas,img,svg'));
-      let best = null;
-      for (const el of nodes) {
-        const r = el.getBoundingClientRect();
-        const style = getComputedStyle(el);
-        const visible = r.width > 200 && r.height > 200 &&
-                        style.visibility !== 'hidden' && style.display !== 'none' &&
-                        style.opacity !== '0';
-        if (!visible) continue;
-        const area = r.width * r.height;
-        if (!best || area > best.area) {
-          best = {x: r.x, y: r.y, width: r.width, height: r.height, area};
-        }
-      }
-      return best;
-    }
-    """
+    # Prefer the design surface in the middle of the viewer, not left thumbnails.
+    selector = "canvas,img,svg"
+    best = page.locator(selector).evaluate_all(
+        """
+        (elements) => {
+          const viewportWidth = window.innerWidth || 1;
+          const viewportHeight = window.innerHeight || 1;
 
-    box = page.evaluate(script)
-    if box and box.get("width", 0) > 0 and box.get("height", 0) > 0:
-        page.screenshot(
-            path=str(output_path),
-            clip={
-                "x": max(0, box["x"]),
-                "y": max(0, box["y"]),
-                "width": box["width"],
-                "height": box["height"],
-            },
-        )
+          const getCandidate = (element, index) => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const visible = rect.width > 250 &&
+                            rect.height > 250 &&
+                            style.visibility !== 'hidden' &&
+                            style.display !== 'none' &&
+                            style.opacity !== '0';
+            if (!visible) return null;
+
+            const area = rect.width * rect.height;
+            const centerX = rect.x + rect.width / 2;
+            const centerY = rect.y + rect.height / 2;
+            const dx = Math.abs(centerX - viewportWidth / 2) / viewportWidth;
+            const dy = Math.abs(centerY - viewportHeight / 2) / viewportHeight;
+            const centralityPenalty = area * (dx * 0.45 + dy * 0.15);
+
+            // Canva thumbnails are usually in the left rail. Penalize those heavily.
+            const leftRailPenalty = rect.x < viewportWidth * 0.18 ? area * 0.8 : 0;
+
+            return { index, score: area - centralityPenalty - leftRailPenalty };
+          };
+
+          let best = null;
+          for (let i = 0; i < elements.length; i += 1) {
+            const candidate = getCandidate(elements[i], i);
+            if (!candidate) continue;
+            if (!best || candidate.score > best.score) best = candidate;
+          }
+          return best;
+        }
+        """
+    )
+
+    if best and isinstance(best.get("index"), int):
+        page.locator(selector).nth(best["index"]).screenshot(path=str(output_path))
         return True
 
     page.screenshot(path=str(output_path), full_page=True)
